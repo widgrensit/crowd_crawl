@@ -21,7 +21,8 @@ routes(_Environment) ->
             security => false,
             routes => [
                 {~"/health", fun(_) -> {status, 200} end, #{methods => [get]}},
-                {"/assets/[...]", "assets"}
+                {~"/", fun crowd_crawl_index_controller:index/1, #{methods => [get]}},
+                {"/static/[...]", "static"}
             ]
         }
     ].
