@@ -88,10 +88,10 @@ get_state(_PlayerId, State) ->
         floor => maps:get(floor, State),
         room_index => maps:get(room_index, State),
         room => room_render_data(maps:get(current_room, State)),
-        hero => maps:get(hero, State),
-        enemies => [maps:without([boss_ability], E) || E <- maps:get(enemies, State)],
+        hero => sanitize_hero(maps:get(hero, State)),
+        enemies => [sanitize_enemy(E) || E <- maps:get(enemies, State)],
         inventory => [maps:with([id, label, tarot, kind, rarity], B) || B <- maps:get(inventory, State)],
-        equipment => maps:get(equipment, State),
+        equipment => sanitize_equipment(maps:get(equipment, State)),
         features => visible_features(maps:get(features, State)),
         rooms_cleared => maps:get(total_rooms_cleared, State),
         rooms_until_boss => maps:get(rooms_until_boss, State),
@@ -725,6 +725,26 @@ direction_delta(~"right") -> {1.0, 0.0};
 direction_delta(_) -> {0.0, 0.0}.
 
 -spec room_render_data(map()) -> map().
+sanitize_hero(Hero) ->
+    Base = maps:with([hp, max_hp, attack, defense, x, y], Hero),
+    Buffs = [atom_to_binary(B) || B <- maps:get(buffs, Hero, []), is_atom(B)],
+    Base#{buffs => Buffs}.
+
+sanitize_enemy(E) ->
+    Base = maps:without([boss_ability, darkness, attacks_per_turn], E),
+    Behavior = maps:get(behavior, Base, melee),
+    Base#{behavior => atom_to_binary(Behavior)}.
+
+sanitize_equipment(Equipment) when is_map(Equipment) ->
+    maps:map(
+        fun(_Slot, none) -> ~"none";
+           (_Slot, Item) when is_map(Item) -> maps:with([id, label, rarity], Item);
+           (_Slot, V) -> V
+        end,
+        Equipment
+    );
+sanitize_equipment(_) -> #{}.
+
 room_render_data(Room) ->
     maps:with([tiles, width, height, doors, type, features, is_boss], Room).
 
