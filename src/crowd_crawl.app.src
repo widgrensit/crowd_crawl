@@ -1,0 +1,16 @@
+{application, crowd_crawl, [
+    {description, "Crowd Crawl — audience-driven dungeon crawler on Asobi"},
+    {vsn, git},
+    {registered, []},
+    {mod, {crowd_crawl_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        nova,
+        asobi
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, []}
+]}.
