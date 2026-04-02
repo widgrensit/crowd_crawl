@@ -5,6 +5,7 @@ primary_region = 'arn'
 
 [env]
   PORT = "8083"
+  ERL_AFLAGS = "-kernel inet_dist_use_interface {0,0,0,0,0,0,0,0} -proto_dist inet6_tcp"
 
 [http_service]
   internal_port = 8083

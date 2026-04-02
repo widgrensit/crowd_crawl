@@ -33,7 +33,7 @@
         {database, "${DATABASE_NAME}"},
         {user, "${DATABASE_USER}"},
         {password, "${DATABASE_PASSWORD}"},
-        {pool_size, 50}
+        {pool_size, 20}
     ]},
     {crowd_crawl, [
         {nova_apps, [asobi]}

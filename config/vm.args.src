@@ -4,3 +4,7 @@
 
 +K true
 +A30
+
+## Enable IPv6 for Fly.io internal networking
+-kernel inet_dist_use_interface {0,0,0,0,0,0,0,0}
+-kernel inet6
