@@ -9,6 +9,7 @@ generate(Seed, RoomIdx) ->
     {Tiles, Width, Height, S2} = generate_tiles(Type, S1),
     {Doors, S3} = generate_doors(Type, Width, Height, S2),
     {Enemies, _S4} = generate_enemies(S3, RoomIdx),
+    SpawnPos = find_floor_tile(Tiles, Width, Height, 2, 2),
     #{
         type => Type,
         tiles => Tiles,
@@ -16,15 +17,20 @@ generate(Seed, RoomIdx) ->
         height => Height,
         doors => Doors,
         enemies => Enemies,
-        room_index => RoomIdx
+        room_index => RoomIdx,
+        spawn => SpawnPos
     }.
 
 -spec walkable(map(), float(), float()) -> boolean().
-walkable(#{tiles := Tiles, width := W, height := H}, X, Y) ->
+walkable(#{tiles := Tiles, width := W, height := H, doors := Doors}, X, Y) ->
     IX = trunc(X),
     IY = trunc(Y),
-    IX >= 0 andalso IX < W andalso IY >= 0 andalso IY < H andalso
-        tile_at(Tiles, IX, IY) =:= floor.
+    InBounds = IX >= 0 andalso IX < W andalso IY >= 0 andalso IY < H,
+    InBounds andalso (tile_at(Tiles, IX, IY) =:= floor orelse is_door_pos(Doors, IX, IY)).
+
+is_door_pos([], _X, _Y) -> false;
+is_door_pos([#{x := DX, y := DY} | _], X, Y) when DX =:= X, DY =:= Y -> true;
+is_door_pos([_ | Rest], X, Y) -> is_door_pos(Rest, X, Y).
 
 -spec door_at(map(), float(), float()) -> false | {door, [map()]}.
 door_at(#{doors := Doors}, X, Y) ->
@@ -41,7 +47,7 @@ door_at(#{doors := Doors}, X, Y) ->
 pick_room_type(S, RoomIdx) when RoomIdx rem 5 =:= 4 ->
     {boss, S};
 pick_room_type(S, _RoomIdx) ->
-    Types = [square, rectangle, lshape, corridor],
+    Types = [square, rectangle, lshape, corridor, cross, hall, chamber],
     {Idx, S1} = rand:uniform_s(length(Types), S),
     {lists:nth(Idx, Types), S1}.
 
@@ -51,6 +57,30 @@ generate_tiles(lshape, S) ->
     Tiles = block_region(make_room(10, 8), 6, 0, 4, 4),
     {Tiles, 10, 8, S};
 generate_tiles(corridor, S) -> {make_room(12, 4), 12, 4, S};
+generate_tiles(cross, S) ->
+    %% Cross-shaped room: 10x10 with corners blocked
+    T0 = make_room(10, 10),
+    T1 = block_region(T0, 0, 0, 3, 3),
+    T2 = block_region(T1, 7, 0, 3, 3),
+    T3 = block_region(T2, 0, 7, 3, 3),
+    T4 = block_region(T3, 7, 7, 3, 3),
+    {T4, 10, 10, S};
+generate_tiles(hall, S) ->
+    %% Long hall with pillars
+    T0 = make_room(14, 6),
+    T1 = set_tile(T0, 4, 2, wall),
+    T2 = set_tile(T1, 4, 3, wall),
+    T3 = set_tile(T2, 9, 2, wall),
+    T4 = set_tile(T3, 9, 3, wall),
+    {T4, 14, 6, S};
+generate_tiles(chamber, S) ->
+    %% Small chamber with center obstacle
+    T0 = make_room(8, 8),
+    T1 = set_tile(T0, 3, 3, wall),
+    T2 = set_tile(T1, 4, 3, wall),
+    T3 = set_tile(T2, 3, 4, wall),
+    T4 = set_tile(T3, 4, 4, wall),
+    {T4, 8, 8, S};
 generate_tiles(boss, S) -> {make_room(12, 10), 12, 10, S}.
 
 make_room(W, H) ->
@@ -103,11 +133,15 @@ generate_enemies(S, RoomIdx) ->
     EnemyCount = max(1, Count),
     Types = crowd_crawl_enemies:types(),
     {Enemies, S2} = lists:foldl(
-        fun(_, {Acc, Si}) ->
+        fun(I, {Acc, Si}) ->
             {Idx, Si1} = rand:uniform_s(length(Types), Si),
             Base = lists:nth(Idx, Types),
             Scaled = scale_enemy(Base, Difficulty),
-            {[Scaled | Acc], Si1}
+            %% Give each enemy a stable position
+            EX = 3 + (I - 1) * 2,
+            EY = 1 + ((I - 1) rem 2),
+            Enemy = Scaled#{x => EX, y => EY, id => I},
+            {[Enemy | Acc], Si1}
         end,
         {[], S1},
         lists:seq(1, EnemyCount)
@@ -121,3 +155,34 @@ scale_enemy(Enemy, Difficulty) ->
 
 tile_at(Tiles, X, Y) ->
     lists:nth(X + 1, lists:nth(Y + 1, Tiles)).
+
+find_floor_tile(Tiles, W, H, StartX, StartY) ->
+    %% Spiral outward from StartX,StartY to find a floor tile
+    case is_floor(Tiles, W, H, StartX, StartY) of
+        true -> {StartX, StartY};
+        false -> find_floor_spiral(Tiles, W, H, StartX, StartY, 1)
+    end.
+
+find_floor_spiral(Tiles, W, H, CX, CY, Radius) when Radius < W + H ->
+    Candidates = [{CX + DX, CY + DY} ||
+        DX <- lists:seq(-Radius, Radius),
+        DY <- lists:seq(-Radius, Radius),
+        abs(DX) =:= Radius orelse abs(DY) =:= Radius],
+    case lists:search(fun({X, Y}) -> is_floor(Tiles, W, H, X, Y) end, Candidates) of
+        {value, Pos} -> Pos;
+        false -> find_floor_spiral(Tiles, W, H, CX, CY, Radius + 1)
+    end;
+find_floor_spiral(_Tiles, _W, _H, CX, CY, _Radius) ->
+    {CX, CY}.
+
+is_floor(Tiles, W, H, X, Y) ->
+    X > 0 andalso X < W - 1 andalso Y > 0 andalso Y < H - 1 andalso
+        tile_at(Tiles, X, Y) =:= floor.
+
+set_tile(Tiles, X, Y, Value) ->
+    Row = lists:nth(Y + 1, Tiles),
+    NewRow = list_set(X + 1, Value, Row),
+    list_set(Y + 1, NewRow, Tiles).
+
+list_set(1, Value, [_ | Rest]) -> [Value | Rest];
+list_set(N, Value, [H | Rest]) -> [H | list_set(N - 1, Value, Rest)].

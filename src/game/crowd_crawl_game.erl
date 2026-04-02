@@ -13,6 +13,7 @@
 init(Config) ->
     Seed = maps:get(seed, Config, erlang:unique_integer([positive])),
     Room0 = crowd_crawl_dungeon:generate(Seed, 0),
+    {SpawnX, SpawnY} = maps:get(spawn, Room0, {2, 2}),
     {ok, #{
         phase => exploring,
         seed => Seed,
@@ -25,8 +26,8 @@ init(Config) ->
             attack => ?HERO_START_ATK,
             defense => ?HERO_START_DEF,
             buffs => [],
-            x => 4.0,
-            y => 4.0
+            x => float(SpawnX),
+            y => float(SpawnY)
         },
         enemies => maps:get(enemies, Room0, []),
         inventory => [],
@@ -67,6 +68,8 @@ tick(#{phase := voting} = State) ->
     {ok, State};
 tick(#{phase := combat} = State) ->
     tick_combat(State);
+tick(#{phase := exploring, enemies := Enemies, tick_count := TC} = State) when length(Enemies) > 0 ->
+    {ok, State#{phase => combat, tick_count => TC + 1}};
 tick(#{phase := exploring, tick_count := TC} = State) ->
     {ok, State#{tick_count => TC + 1}}.
 
@@ -124,7 +127,9 @@ vote_resolved(_Template, _Result, State) ->
 
 %% --- Hero Input ---
 
-handle_hero_input(#{~"action" := ~"move", ~"direction" := Dir}, #{phase := exploring} = State) ->
+handle_hero_input(#{~"action" := ~"move", ~"direction" := Dir}, #{phase := Phase} = State) when
+    Phase =:= exploring; Phase =:= combat
+->
     Hero = maps:get(hero, State),
     {Dx, Dy} = direction_delta(Dir),
     X = maps:get(x, Hero) + Dx,
@@ -140,56 +145,75 @@ handle_hero_input(#{~"action" := ~"move", ~"direction" := Dir}, #{phase := explo
         false ->
             {ok, State}
     end;
+handle_hero_input(#{~"action" := ~"attack"}, #{phase := exploring, enemies := Enemies} = State) when
+    length(Enemies) > 0
+->
+    handle_hero_input(#{~"action" => ~"attack"}, State#{phase => combat});
 handle_hero_input(#{~"action" := ~"attack"}, #{phase := combat, enemies := Enemies} = State) ->
     case Enemies of
         [] ->
             {ok, State#{phase => exploring}};
         [Target | Rest] ->
             Hero = maps:get(hero, State),
+            %% Hero attacks first enemy
             Atk = maps:get(attack, Hero),
             Dmg = max(1, Atk - maps:get(defense, Target, 0)),
-            Hp = maps:get(hp, Target) - Dmg,
-            case Hp =< 0 of
-                true -> {ok, State#{enemies => Rest}};
-                false -> {ok, State#{enemies => [Target#{hp => Hp} | Rest]}}
+            TargetHp = maps:get(hp, Target) - Dmg,
+            NewEnemies = case TargetHp =< 0 of
+                true -> Rest;
+                false -> [Target#{hp => TargetHp} | Rest]
+            end,
+            %% Surviving enemies counter-attack
+            Def = maps:get(defense, Hero),
+            CounterDmg = lists:sum([max(1, maps:get(attack, E, 3) - Def) || E <- NewEnemies]),
+            HeroHp = maps:get(hp, Hero) - CounterDmg,
+            case HeroHp =< 0 of
+                true ->
+                    VoteConfig = crowd_crawl_votes:mercy(),
+                    {ok, State#{
+                        hero => Hero#{hp => 0},
+                        enemies => NewEnemies,
+                        phase => dead,
+                        vote_pending => VoteConfig
+                    }};
+                false ->
+                    State1 = State#{hero => Hero#{hp => HeroHp}, enemies => NewEnemies},
+                    %% Check if all enemies dead
+                    case NewEnemies of
+                        [] -> trigger_room_clear(State1);
+                        _ -> {ok, State1}
+                    end
             end
     end;
 handle_hero_input(_, State) ->
     {ok, State}.
 
-%% --- Combat Tick ---
+%% --- Combat ---
 
-tick_combat(#{enemies := [], rooms_until_boss := RUB} = State) ->
+tick_combat(State) ->
+    %% Turn-based: tick just keeps the match alive. Damage happens in handle_hero_input.
+    {ok, State}.
+
+trigger_room_clear(#{rooms_until_boss := RUB} = State) ->
     RoomIdx = maps:get(room_index, State),
     Cleared = [RoomIdx | maps:get(cleared_rooms, State)],
     case RUB =< 1 of
         true ->
             VoteConfig = crowd_crawl_votes:boss_modifier(),
             {ok, State#{
-                enemies => [],
                 cleared_rooms => Cleared,
                 rooms_until_boss => ?ROOMS_PER_FLOOR,
+                phase => exploring,
                 vote_pending => VoteConfig
             }};
         false ->
             VoteConfig = crowd_crawl_votes:boon_pick(maps:get(seed, State), RoomIdx),
             {ok, State#{
-                enemies => [],
                 cleared_rooms => Cleared,
                 rooms_until_boss => RUB - 1,
+                phase => exploring,
                 vote_pending => VoteConfig
             }}
-    end;
-tick_combat(#{enemies := Enemies, hero := Hero} = State) ->
-    Def = maps:get(defense, Hero),
-    Damage = lists:sum([max(1, maps:get(attack, E, 3) - Def) || E <- Enemies]),
-    Hp = maps:get(hp, Hero) - Damage,
-    case Hp =< 0 of
-        true ->
-            VoteConfig = crowd_crawl_votes:mercy(),
-            {ok, State#{hero => Hero#{hp => 0}, phase => dead, vote_pending => VoteConfig}};
-        false ->
-            {ok, State#{hero => Hero#{hp => Hp}}}
     end.
 
 %% --- Room Transitions ---
@@ -218,12 +242,13 @@ enter_next_room(DoorId, State) ->
     RoomIdx = maps:get(room_index, State) + 1,
     DoorHash = erlang:phash2(DoorId),
     Room = crowd_crawl_dungeon:generate(Seed + DoorHash, RoomIdx),
+    {SpawnX, SpawnY} = maps:get(spawn, Room, {2, 2}),
     Hero = maps:get(hero, State),
     {ok, State#{
         room_index => RoomIdx,
         current_room => Room,
         enemies => maps:get(enemies, Room, []),
-        hero => Hero#{x => 4.0, y => 4.0},
+        hero => Hero#{x => float(SpawnX), y => float(SpawnY)},
         phase => exploring
     }}.
 
